@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Environnement et secrets
+.env
+.env.*
+
+# MLflow
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+mlruns/
+mlartifacts/
+
+# Résultats temporaires
+results/
+
+# IDE et système
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Codacy
+.github/instructions/codacy.instructions.md
+/yolo11n.pt
