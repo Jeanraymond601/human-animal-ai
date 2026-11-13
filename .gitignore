@@ -27,3 +27,6 @@ Thumbs.db
 # Codacy
 .github/instructions/codacy.instructions.md
 /yolo11n.pt
+
+# Environnement DVC
+.venv-dvc/
