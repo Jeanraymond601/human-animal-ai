@@ -16,6 +16,11 @@ import streamlit as st
 from PIL import Image
 
 from app.services.detector import TARGET_CLASSES, detect_objects  # noqa: E402
+from app.evaluation_page import (  # noqa: E402
+    render_evaluation_metrics,
+    render_evaluation_page,
+    run_cached_evaluation,
+)
 
 
 # ============================================================
@@ -32,7 +37,22 @@ st.set_page_config(
 APP_NAME = "Human & Animal AI"
 APP_VERSION = "1.0.0"
 MAX_HISTORY = 20
-PAGES = ["Dashboard", "Détection", "Historique", "À propos"]
+
+# Dossier permanent contenant les images originales analysées
+DETECTED_IMAGES_DIR = ROOT_DIR / "data" / "detected_images"
+DETECTED_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+# Dossier permanent contenant les annotations YOLO de référence
+DETECTED_LABELS_DIR = DETECTED_IMAGES_DIR / "labels"
+DETECTED_LABELS_DIR.mkdir(parents=True, exist_ok=True)
+
+PAGES = [
+    "Dashboard",
+    "Détection",
+    "Évaluation",
+    "Historique",
+    "À propos",
+]
 
 
 # ============================================================
@@ -46,6 +66,8 @@ def init_state():
         "history": [],
         "last_detection_key": None,
         "last_detection": None,
+        # Cache des évaluations individuelles (évite les doublons MLflow)
+        "image_evaluations": {},
     }
 
     for key, value in defaults.items():
@@ -78,7 +100,31 @@ def clean_html(content: str) -> str:
 
 
 def render_html(content: str) -> None:
-    st.markdown(clean_html(content), unsafe_allow_html=True)
+    st.html(clean_html(content))
+
+
+# ============================================================
+# FILE HELPERS
+# ============================================================
+
+def save_original_image(image_bytes: bytes, file_hash: str, filename: str) -> Path:
+    """
+    Sauvegarde l'image originale dans DETECTED_IMAGES_DIR.
+
+    Le nom du fichier est le hash SHA-256 du contenu : la même image
+    n'est écrite qu'une seule fois, même si le seuil de confiance change.
+    """
+    extension = Path(filename).suffix.lower()
+
+    if extension not in {".jpg", ".jpeg", ".png"}:
+        extension = ".png"
+
+    image_path = DETECTED_IMAGES_DIR / f"{file_hash}{extension}"
+
+    if not image_path.is_file():
+        image_path.write_bytes(image_bytes)
+
+    return image_path
 
 
 # ============================================================
@@ -323,9 +369,7 @@ hr { border-color: var(--border); }
 
 def apply_theme(theme):
     colors = THEMES.get(theme, THEMES["Sombre"])
-
     variables = "".join(f"--{name}: {value};" for name, value in colors.items())
-
     render_html(f"<style>:root {{ {variables} }}\n{BASE_CSS}</style>")
 
 
@@ -337,7 +381,6 @@ apply_theme(st.session_state.theme)
 # ============================================================
 
 def section_title(title, description=None):
-
     render_html(f'<div class="section-title">{escape(title)}</div>')
 
     if description:
@@ -347,7 +390,6 @@ def section_title(title, description=None):
 
 
 def metric_card(label, value, icon_name):
-
     render_html(
         f"""
         <div class="metric-card">
@@ -362,7 +404,6 @@ def metric_card(label, value, icon_name):
 
 
 def page_header(eyebrow, title, description):
-
     render_html(
         f"""
         <div class="eyebrow">{escape(eyebrow)}</div>
@@ -373,7 +414,6 @@ def page_header(eyebrow, title, description):
 
 
 def empty_state(icon_name, title, text):
-
     render_html(
         f"""
         <div class="content-card" style="text-align:center;padding:45px 20px;">
@@ -388,7 +428,6 @@ def empty_state(icon_name, title, text):
 
 
 def show_footer():
-
     render_html(
         f"""
         <div class="footer">
@@ -402,11 +441,9 @@ def show_footer():
 
 
 def get_detection_rows(detections):
-
     rows = []
 
     for item in detections:
-
         coords = item.get("coordonnees", [])
 
         rows.append({
@@ -424,7 +461,6 @@ def normalize_detection_result(annotated_image, detections, stats):
     Regroupe les trois valeurs retournées par detect_objects()
     en une structure unique pour l'interface.
     """
-
     result_data = {
         **stats,
         "detections": detections,
@@ -560,7 +596,6 @@ def render_dashboard():
     col1, col2 = st.columns([1.3, 1])
 
     with col1:
-
         render_html(
             """
             <div class="content-card">
@@ -588,7 +623,6 @@ def render_dashboard():
         )
 
     with col2:
-
         render_html(
             f"""
             <div class="content-card">
@@ -614,7 +648,6 @@ def render_dashboard():
         )
 
     if history:
-
         section_title("Analyses récentes")
 
         recent = history[-5:][::-1]
@@ -657,7 +690,6 @@ def render_detection():
     col_upload, col_settings = st.columns([1.5, 1])
 
     with col_upload:
-
         uploaded_file = st.file_uploader(
             "Importer une image",
             type=["jpg", "jpeg", "png"],
@@ -665,7 +697,6 @@ def render_detection():
         )
 
     with col_settings:
-
         confidence = st.slider(
             "Seuil de confiance",
             min_value=0.10,
@@ -739,12 +770,20 @@ def render_detection():
 
             annotated_bytes = image_buffer.getvalue()
 
+            # Sauvegarde permanente de l'image originale sur disque
+            original_path = save_original_image(
+                image_bytes,
+                file_hash,
+                uploaded_file.name,
+            )
+
             st.session_state.last_detection_key = detection_key
 
             st.session_state.last_detection = {
                 "annotated_image": annotated_image,
                 "annotated_bytes": annotated_bytes,
                 "data": result_data,
+                "image_path": str(original_path),
             }
 
             # ------------------------------------------------
@@ -769,6 +808,7 @@ def render_detection():
                     "total": result_data.get("total", 0),
                     "par_classe": result_data.get("par_classe", {}),
                     "annotated_bytes": annotated_bytes,
+                    "image_path": str(original_path),
                 })
 
                 # Limite la mémoire utilisée par l'historique
@@ -912,6 +952,86 @@ def render_detection():
             )
 
         # ----------------------------------------------------
+        # EVALUATION AUTOMATIQUE (après les résultats de détection)
+        # ----------------------------------------------------
+
+        st.markdown("")
+
+        section_title(
+            "Évaluation automatique",
+            "Dès qu'une annotation de référence est disponible, "
+            "les détections sont comparées à la vérité terrain.",
+        )
+
+        annotation_file = st.file_uploader(
+            "Importer l'annotation de référence (.txt)",
+            type=["txt"],
+            help=(
+                "Format YOLO : class_id x_center y_center width height. "
+                "Coordonnées normalisées entre 0 et 1."
+            ),
+            key=f"annotation_{file_hash}",
+        )
+
+        label_path = DETECTED_LABELS_DIR / f"{file_hash}.txt"
+
+        # Sauvegarde permanente de l'annotation importée
+        if annotation_file is not None:
+
+            annotation_bytes = annotation_file.getvalue()
+
+            if (
+                not label_path.is_file()
+                or label_path.read_bytes() != annotation_bytes
+            ):
+                label_path.write_bytes(annotation_bytes)
+
+        elif label_path.is_file():
+
+            st.caption(
+                "Annotation déjà enregistrée pour cette image : "
+                "elle est utilisée automatiquement."
+            )
+
+        if not label_path.is_file():
+
+            st.info(
+                "Aucune annotation pour cette image. "
+                "Importez-la : l'évaluation se lancera automatiquement.",
+                icon=":material/info:",
+            )
+
+        else:
+
+            try:
+
+                with st.spinner("Évaluation automatique en cours..."):
+
+                    evaluation_result, _ = run_cached_evaluation(
+                        image_path=result["image_path"],
+                        label_path=label_path,
+                        detections=result_data.get("detections", []),
+                        confidence=confidence,
+                    )
+
+                st.success(
+                    "Évaluation terminée et enregistrée dans MLflow.",
+                    icon=":material/check_circle:",
+                )
+
+                render_evaluation_metrics(evaluation_result)
+
+            except Exception as evaluation_error:
+
+                st.error(
+                    "Impossible d'évaluer cette image. "
+                    "Vérifiez le contenu du fichier d'annotation.",
+                    icon=":material/error:",
+                )
+
+                st.exception(evaluation_error)
+
+        # ----------------------------------------------------
         # TELECHARGEMENT
         # ----------------------------------------------------
 
@@ -1010,6 +1130,16 @@ def render_history():
                 c1.metric("Personnes", item["personnes"])
                 c2.metric("Animaux", item["animaux"])
                 c3.metric("Total", item["total"])
+
+                # Affichage de l'image originale sauvegardée
+                image_path = item.get("image_path")
+
+                if image_path and Path(image_path).is_file():
+                    st.image(
+                        image_path,
+                        caption="Image originale",
+                        use_container_width=True,
+                    )
 
                 if item.get("par_classe"):
 
@@ -1128,6 +1258,7 @@ def render_about():
 PAGE_RENDERERS = {
     "Dashboard": render_dashboard,
     "Détection": render_detection,
+    "Évaluation": render_evaluation_page,
     "Historique": render_history,
     "À propos": render_about,
 }

@@ -1,10 +1,12 @@
-# Python
+ï»¿# Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 venv/
 .venv/
+.venv-dvc/
 
-# Environnement et secrets
+# Secrets
 .env
 .env.*
 
@@ -15,18 +17,36 @@ mlflow.db-wal
 mlruns/
 mlartifacts/
 
-# Résultats temporaires
+# Resultats generes
 results/
+data/detected_images/
+data/validation/labels.cache
 
-# IDE et système
+# Modeles experimentaux
+/yolo11m.pt
+/yolov8l-worldv2.pt
+/yolov8s-worldv2.pt
+/weights/
+
+# Scripts experimentaux locaux
+/analyze_boxes.py
+/compare_models.py
+/fusion.py
+/test_tiling.py
+/test_yolo_world.py
+/test_yolo_world1.py
+/test_yolo_world2.py
+/validate_fusion.py
+/visualize_validation.py
+
+# IDE et systeme
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
 # Codacy
-.github/instructions/codacy.instructions.md
-/yolo11n.pt
+.codacy/generated/
 
-# Environnement DVC
-.venv-dvc/
+# Fichiers specifiques
+.github/instructions/codacy.instructions.md

@@ -1,16 +1,25 @@
-
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import cv2
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-from ultralytics.engine.results import Results
 
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+
 MODEL_PATH = BASE_DIR / "yolo11n.pt"
+
+DEVICE = "cpu"
+IMAGE_SIZE = 640
+MODEL_IOU = 0.45
+MAX_DETECTIONS = 300
 
 TARGET_CLASSES = {
     0: "Personne",
@@ -28,15 +37,29 @@ TARGET_CLASSES = {
 
 ANIMAL_IDS = set(TARGET_CLASSES.keys()) - {0}
 
-# Le modèle sera chargé uniquement lors de la première détection.
-_model = None
+PERSON_COLOR = (255, 140, 0)
+ANIMAL_COLOR = (0, 200, 100)
+
+TEXT_COLOR = (255, 255, 255)
+BOX_THICKNESS = 2
+
+# Le modèle est chargé uniquement à la première détection.
+_model: YOLO | None = None
 
 
-def get_model():
-    """Charge YOLO une seule fois, au premier appel."""
+# ============================================================
+# CHARGEMENT DU MODELE
+# ============================================================
+
+def get_model() -> YOLO:
+    """
+    Charge YOLO11n une seule fois.
+    """
+
     global _model
 
     if _model is None:
+
         if not MODEL_PATH.exists():
             raise FileNotFoundError(
                 f"Modele YOLO introuvable : {MODEL_PATH}"
@@ -44,22 +67,159 @@ def get_model():
 
         _model = YOLO(str(MODEL_PATH))
 
-        print("====================================")
+        print("=" * 50)
         print(" HUMAN & ANIMAL AI")
-        print("====================================")
+        print("=" * 50)
         print(f"Modele : {MODEL_PATH.name}")
         print(f"Classes COCO disponibles : {len(_model.names)}")
+        print(f"Appareil : {DEVICE}")
         print("Moteur de detection initialise.")
 
     return _model
 
 
+# ============================================================
+# VALIDATION DES RESULTATS
+# ============================================================
+
+def get_prediction_result(
+    model: Any,
+    image: Image.Image,
+    confidence: float = 0.20,
+) -> Any:
+    """
+    Execute l'inference et retourne un résultat valide.
+
+    Accepte les résultats Ultralytics et les objets simulés
+    utilisés dans les tests unitaires.
+    """
+
+    prediction_results = model.predict(
+        source=image,
+        imgsz=IMAGE_SIZE,
+        conf=confidence,
+        iou=MODEL_IOU,
+        device=DEVICE,
+        max_det=MAX_DETECTIONS,
+        verbose=False,
+        stream=False,
+    )
+
+    result = next(iter(prediction_results), None)
+
+    if result is None or not hasattr(result, "boxes"):
+        raise RuntimeError(
+            "Le modele n'a retourne aucun resultat valide."
+        )
+
+    return result
+
+
+# ============================================================
+# ANNOTATION DES DETECTIONS
+# ============================================================
+
+def draw_detection(
+    image: np.ndarray,
+    bbox: list[float],
+    label: str,
+    confidence: float,
+    color: tuple[int, int, int],
+) -> None:
+    """
+    Dessine une boite et son etiquette sur une image BGR.
+    """
+
+    height, width = image.shape[:2]
+
+    x1, y1, x2, y2 = map(int, bbox)
+
+    # Limiter les coordonnées aux dimensions de l'image.
+    x1 = max(0, min(x1, width - 1))
+    y1 = max(0, min(y1, height - 1))
+    x2 = max(0, min(x2, width - 1))
+    y2 = max(0, min(y2, height - 1))
+
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    cv2.rectangle(
+        image,
+        (x1, y1),
+        (x2, y2),
+        color,
+        BOX_THICKNESS,
+    )
+
+    text = f"{label} {confidence * 100:.1f}%"
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.6
+    thickness = 2
+
+    (text_width, text_height), baseline = cv2.getTextSize(
+        text,
+        font,
+        font_scale,
+        thickness,
+    )
+
+    padding = 4
+
+    # Positionner le label au-dessus de la boîte si possible.
+    label_top = y1 - text_height - baseline - padding * 2
+
+    if label_top < 0:
+        label_top = y1
+
+    label_bottom = label_top + text_height + baseline + padding * 2
+
+    label_right = min(
+        width - 1,
+        x1 + text_width + padding * 2,
+    )
+
+    label_bottom = min(height - 1, label_bottom)
+
+    cv2.rectangle(
+        image,
+        (x1, label_top),
+        (label_right, label_bottom),
+        color,
+        -1,
+    )
+
+    text_y = min(
+        height - 1,
+        label_top + text_height + padding,
+    )
+
+    cv2.putText(
+        image,
+        text,
+        (x1 + padding, text_y),
+        font,
+        font_scale,
+        TEXT_COLOR,
+        thickness,
+        cv2.LINE_AA,
+    )
+
+
+# ============================================================
+# DETECTION PRINCIPALE
+# ============================================================
+
 def detect_objects(
     image: Image.Image,
-    confidence: float = 0.20
+    confidence: float = 0.20,
 ) -> tuple[Image.Image, list[dict[str, Any]], dict[str, Any]]:
     """
     Détecte les personnes et les animaux dans une image.
+
+    Args:
+        image: image au format PIL.
+        confidence: seuil minimal de confiance entre 0 et 1.
 
     Returns:
         annotated_image: image annotée avec les boîtes.
@@ -67,8 +227,19 @@ def detect_objects(
         counts: statistiques des détections.
     """
 
+    # --------------------------------------------------------
+    # VALIDATION DE L'IMAGE
+    # --------------------------------------------------------
+
     if not isinstance(image, Image.Image):
-        raise TypeError("L'image doit etre au format PIL.")
+        raise TypeError(
+            "L'image doit etre au format PIL."
+        )
+
+    if not isinstance(confidence, (int, float)):
+        raise TypeError(
+            "La confiance doit etre numerique."
+        )
 
     if not 0.0 <= confidence <= 1.0:
         raise ValueError(
@@ -77,26 +248,28 @@ def detect_objects(
 
     image = image.convert("RGB")
 
-    results = cast(
-        list[Results],
-        get_model().predict(
-            source=image,
-            conf=confidence,
-            iou=0.45,
-            device="cpu",
-            max_det=300,
-            verbose=False
-        )
+    # --------------------------------------------------------
+    # CHARGEMENT ET INFERENCE
+    # --------------------------------------------------------
+
+    model = get_model()
+
+    result = get_prediction_result(
+        model=model,
+        image=image,
+        confidence=float(confidence),
     )
 
-    if not results:
-        raise RuntimeError("Le modele n'a retourne aucun resultat.")
-
-    result = results[0]
+    # --------------------------------------------------------
+    # PREPARATION DE L'IMAGE
+    # --------------------------------------------------------
 
     image_array = np.array(image)
-    image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
-    annotated = image_bgr.copy()
+
+    annotated = cv2.cvtColor(
+        image_array,
+        cv2.COLOR_RGB2BGR,
+    )
 
     detections: list[dict[str, Any]] = []
 
@@ -104,17 +277,51 @@ def detect_objects(
         "personnes": 0,
         "animaux": 0,
         "total": 0,
-        "par_classe": {}
+        "par_classe": {},
     }
 
-    PERSON_COLOR = (255, 140, 0)
-    ANIMAL_COLOR = (0, 200, 100)
+    # --------------------------------------------------------
+    # EXTRACTION DES BOITES
+    # --------------------------------------------------------
 
-    if result.boxes is not None:
-        for box in result.boxes:
+    boxes = result.boxes
 
-            class_id = int(box.cls[0].item())
-            score = float(box.conf[0].item())
+    if boxes is not None:
+
+        # Compatibilité entre les objets FakeBox des tests
+        # et les résultats réels de YOLO.
+
+        detection_data: Iterable[tuple[Any, Any, Any]]
+
+        if isinstance(boxes, list):
+
+            detection_data = [
+                (
+                    box.cls[0],
+                    box.conf[0],
+                    box.xyxy[0],
+                )
+                for box in boxes
+            ]
+
+        else:
+
+            class_ids = boxes.cls.tolist()
+            confidences = boxes.conf.tolist()
+            coordinates = boxes.xyxy.tolist()
+
+            detection_data = zip(
+                class_ids,
+                confidences,
+                coordinates,
+            )
+
+        for class_id, score, bbox in detection_data:
+
+            # Conversion robuste des valeurs NumPy.
+            class_id = int(np.asarray(class_id).reshape(-1)[0])
+            score = float(np.asarray(score).reshape(-1)[0])
+            bbox = np.asarray(bbox, dtype=float).reshape(-1).tolist()
 
             # Ignorer les classes non ciblées.
             if class_id not in TARGET_CLASSES:
@@ -122,79 +329,47 @@ def detect_objects(
 
             label = TARGET_CLASSES[class_id]
 
-            x1, y1, x2, y2 = map(
-                int,
-                box.xyxy[0].tolist()
+            bbox_values = [
+                float(value)
+                for value in bbox
+            ]
+
+            # Catégorie et couleur.
+            if class_id == 0:
+                category = "Personne"
+                color = PERSON_COLOR
+            else:
+                category = "Animal"
+                color = ANIMAL_COLOR
+
+            # Annotation.
+            draw_detection(
+                image=annotated,
+                bbox=bbox_values,
+                label=label,
+                confidence=score,
+                color=color,
             )
 
-            category = (
-                "Personne" if class_id == 0 else "Animal"
-            )
-
-            color = (
-                PERSON_COLOR if class_id == 0
-                else ANIMAL_COLOR
-            )
-
-            # Dessiner la boîte de détection.
-            cv2.rectangle(
-                annotated,
-                (x1, y1),
-                (x2, y2),
-                color,
-                2
-            )
-
-            # Préparer le texte.
-            text = f"{label} {score * 100:.1f}%"
-
-            (text_width, text_height), _ = cv2.getTextSize(
-                text,
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                2
-            )
-
-            label_y = max(y1, text_height + 10)
-
-            # Fond du label.
-            cv2.rectangle(
-                annotated,
-                (x1, label_y - text_height - 10),
-                (x1 + text_width + 8, label_y),
-                color,
-                -1
-            )
-
-            # Texte du label.
-            cv2.putText(
-                annotated,
-                text,
-                (x1 + 4, label_y - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2
-            )
-
-            # Enregistrer la détection.
+            # Enregistrement.
             detection = {
                 "classe": label,
                 "categorie": category,
                 "confiance": round(score * 100, 2),
                 "coordonnees": [
-                    round(float(value), 2)
-                    for value in box.xyxy[0].tolist()
-                ]
+                    round(value, 2)
+                    for value in bbox_values
+                ],
             }
 
             detections.append(detection)
 
-            # Mettre à jour les statistiques.
+            # Statistiques.
             counts["total"] += 1
 
             if class_id == 0:
                 counts["personnes"] += 1
+
             elif class_id in ANIMAL_IDS:
                 counts["animaux"] += 1
 
@@ -202,10 +377,13 @@ def detect_objects(
                 counts["par_classe"].get(label, 0) + 1
             )
 
-    # Conversion BGR vers RGB.
+    # --------------------------------------------------------
+    # CONVERSION BGR VERS RGB
+    # --------------------------------------------------------
+
     annotated_rgb = cv2.cvtColor(
         annotated,
-        cv2.COLOR_BGR2RGB
+        cv2.COLOR_BGR2RGB,
     )
 
     annotated_image = Image.fromarray(annotated_rgb)
