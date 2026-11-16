@@ -1,9 +1,9 @@
-
+﻿
 streamlit
 pandas
 Pillow
 numpy
-opencv-python
+opencv-python-headless
 ultralytics
 mlflow
 pytest

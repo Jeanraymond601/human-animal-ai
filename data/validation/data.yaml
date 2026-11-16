@@ -1,4 +1,5 @@
-path: .
+﻿path: data/validation
+train: images
 val: images
 
 names:
