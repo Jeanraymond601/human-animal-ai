@@ -29,6 +29,6 @@ Effet du seuil de confiance (nombre de détections correctes, sur images.jpg et 
 
 ## 4. Pistes pour améliorer la fiabilité
 - Corriger les annotations puis élargir le jeu de validation avant de chiffrer mAP/précision/rappel.
-- Fixer le seuil par défaut autour de 0,30 (actuellement 0,20 dans `detect_objects`, 0,35 dans le script de test).
+- ~~Fixer le seuil par défaut autour de 0,30~~ : fait, `DEFAULT_CONFIDENCE = 0.30` dans `detect_objects` (était 0,20).
 - Si la précision reste insuffisante, essayer `yolo11s`/`yolo11m` (plus précis, plus lents) et comparer sur le même jeu.
 - Le chien est détecté avec une confiance faible (45 %) alors que l'image est nette : à surveiller sur des images plus nombreuses.

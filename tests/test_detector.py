@@ -158,3 +158,14 @@ def test_image_is_converted_to_rgb(monkeypatch):
     assert annotated.size == (320, 240)
     assert detections == []
     assert counts["total"] == 0
+
+
+def test_default_confidence_is_used(monkeypatch, test_image):
+    """Sans argument, le seuil par defaut recommande (0,30) est utilise."""
+
+    fake_model = install_fake_model(monkeypatch, [])
+
+    detector.detect_objects(test_image)
+
+    assert detector.DEFAULT_CONFIDENCE == 0.30
+    assert fake_model.calls[0]["conf"] == detector.DEFAULT_CONFIDENCE
