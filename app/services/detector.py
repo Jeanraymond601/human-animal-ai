@@ -21,6 +21,9 @@ IMAGE_SIZE = 640
 MODEL_IOU = 0.45
 MAX_DETECTIONS = 300
 
+# Seuil recommande par le rapport de detection (issue #2) : 0,25 a 0,35.
+DEFAULT_CONFIDENCE = 0.30
+
 TARGET_CLASSES = {
     0: "Personne",
     14: "Oiseau",
@@ -85,7 +88,7 @@ def get_model() -> YOLO:
 def get_prediction_result(
     model: Any,
     image: Image.Image,
-    confidence: float = 0.20,
+    confidence: float = DEFAULT_CONFIDENCE,
 ) -> Any:
     """
     Execute l'inference et retourne un résultat valide.
@@ -212,7 +215,7 @@ def draw_detection(
 
 def detect_objects(
     image: Image.Image,
-    confidence: float = 0.20,
+    confidence: float = DEFAULT_CONFIDENCE,
 ) -> tuple[Image.Image, list[dict[str, Any]], dict[str, Any]]:
     """
     Détecte les personnes et les animaux dans une image.
